@@ -103,18 +103,24 @@ def getModel(wordToNum):
 def trainModel():
 
     rawDataTrain, normalizedDataTrain = getData('train.norm')
+    rawDataTest, normalizedDataTest = getData('dev.norm')
 
     wordToNum = buildDict(rawDataTrain+normalizedDataTrain)
     
     rawDataTrain = tokenize(rawDataTrain, wordToNum)
     normalizedDataTrain = tokenize(normalizedDataTrain, wordToNum)
 
+    rawDataTest = tokenize(rawDataTest, wordToNum)
+    normalizedDataTest = tokenize(normalizedDataTest, wordToNum)
+
     model       = getModel(wordToNum)
     
     xTrain      = rawDataTrain
     yTrain      = normalizedDataTrain
+    xTest       = rawDataTest
+    yTest       = normalizedDataTest
     
-    history     = model.fit(xTrain, yTrain, epochs=EPOCHS, batch_size=BATCH_SIZE)
+    history     = model.fit(xTrain, yTrain, validation_data=(xTest,yTest), epochs=EPOCHS, batch_size=BATCH_SIZE)
     
     return model,history
 
