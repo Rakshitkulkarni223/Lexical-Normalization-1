@@ -82,7 +82,7 @@ def trainModel():
 
     tokenizer = Tokenizer(oov_token="<OOV>")
 
-    tokenizer.fit_to_texts(rawDataTrain+normalizedDataTrain)
+    tokenizer.fit_on_texts(rawDataTrain+normalizedDataTrain)
     wordToNum = tokenizer.word_index
     
     xTrain = tokenizer.texts_to_sequences(rawDataTrain)
