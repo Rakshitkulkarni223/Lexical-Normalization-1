@@ -94,7 +94,7 @@ def trainModel():
     xTest = tokenizer.texts_to_sequences(rawDataTest)
     xTest = pad_sequences(xTest,padding="post")
 
-    yTrain = tokenizer.texts_to_sequences(normalizedDataTest)
+    yTest = tokenizer.texts_to_sequences(normalizedDataTest)
     yTest = pad_sequences(yTest,padding="post")
 
     model       = getModel(wordToNum)
