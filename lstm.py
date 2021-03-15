@@ -1,35 +1,39 @@
 import warnings
 warnings.filterwarnings('ignore',category=FutureWarning)
 
+import re
 import os
 import time
 import numpy as np
 import pandas as pd
 import pickle as pkl
-import tensorflow as tf
 import matplotlib.pyplot as plt
 from collections import defaultdict 
 import tensorflow.keras.backend as K
 
+from tensorflow import one_hot
 from tensorflow.keras.preprocessing.text import Tokenizer
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 
-from tensorflow.keras.models import Model
+from tensorflow.keras.models import Sequential
 
 from tensorflow.keras.layers import LSTM
 from tensorflow.keras.layers import Dense
 from tensorflow.keras.layers import Input
 from tensorflow.keras.layers import Embedding
+from tensorflow.keras.layers import Activation
+from tensorflow.keras.layers import RepeatVector
+from tensorflow.keras.layers import Bidirectional
 from tensorflow.keras.layers import TimeDistributed
 
 from tensorflow.keras.optimizers import Adam
 
 
-EPOCHS = 15
+EPOCHS = 10
 MAX_LEN = 50
 VOCAB_SIZE = 0
-VECTOR_DIM = 80
-HIDDEN_DIM = 100
+VECTOR_DIM = 100
+HIDDEN_DIM = 300
 BATCH_SIZE = 16
 
 def getData(path,limit):
@@ -60,15 +64,23 @@ def getData(path,limit):
 def buildDict(data):
 
     wordToNum = defaultdict(int)
-
     num = 1
     for sent in data:
         for word in sent:
             if not wordToNum[word]:
                 wordToNum[word] = num
-                num += 1
+                num+= 1
 
     return wordToNum
+
+def buildDictInv(wordToNum):
+
+    numToWord = defaultdict(str)
+
+    for key in wordToNum.keys():
+        numToWord[wordToNum[key]]=key
+
+    return numToWord
 
 def tokenize(data,wordToNum):
 
@@ -79,7 +91,8 @@ def tokenize(data,wordToNum):
         tokenizedSent = []
         for word in sent:
             tokenizedSent.append(wordToNum[word])
-        for i in range(MAX_LEN-len(tokenizedSent)):
+
+        for _ in range(MAX_LEN-len(tokenizedSent)):
             tokenizedSent.append(0)
 
         tokenizedSent=np.array(tokenizedSent,dtype=float)
@@ -89,33 +102,55 @@ def tokenize(data,wordToNum):
 
 def getModel(VOCAB_SIZE):
 
-    encoder_inputs = Input(shape=(MAX_LEN,), dtype='int32')
-    encoder_embedding = Embedding(input_dim=VOCAB_SIZE, output_dim=VECTOR_DIM,input_length=MAX_LEN,trainable=True)(encoder_inputs)
-    encoder_LSTM = LSTM(HIDDEN_DIM, return_state=True)
-    encoder_outputs, state_h, state_c = encoder_LSTM(encoder_embedding)
-    
-    decoder_inputs = Input(shape=(MAX_LEN,), dtype='int32')
-    decoder_embedding =Embedding(input_dim=VOCAB_SIZE, output_dim=VECTOR_DIM,input_length=MAX_LEN,trainable=True)(decoder_inputs)
-    decoder_LSTM = LSTM(HIDDEN_DIM, return_state=True, return_sequences=True)
-    decoder_outputs, _, _ = decoder_LSTM(decoder_embedding, initial_state=[state_h, state_c])
-    
-    outputs = TimeDistributed(Dense(VOCAB_SIZE,activation='softmax'))(decoder_outputs)
+    model = Sequential()
 
-    model = Model([encoder_inputs, decoder_inputs], outputs)
-
-    model.compile(optimizer=Adam(0.01), loss='categorical_crossentropy')
+    model.add(Input(shape=(MAX_LEN,)))
+    model.add(Embedding(VOCAB_SIZE, output_dim=VECTOR_DIM, input_length=MAX_LEN, mask_zero=True, trainable=True))
+    model.add(LSTM(HIDDEN_DIM))
+    model.add(RepeatVector(MAX_LEN))
+    model.add(LSTM(HIDDEN_DIM, return_sequences = True))
+    model.add(TimeDistributed(Dense(VOCAB_SIZE)))
+    model.add(Activation('softmax'))
+    model.compile(optimizer='adam', loss='categorical_crossentropy')
     
     print(model.summary())
     
     return model
 
+def predictTest(model, xTest, yTest, numToWord):
+
+    for i in range(50):
+
+        ans = model.predict(xTest[i:i+1,:])
+        ans = K.argmax(ans,-1)
+
+        raw = []
+        normalized = []
+        normalizedAns = []
+        for j in range(MAX_LEN):
+            normalizedAns+=[numToWord[ans.numpy()[0][j]]]
+
+        for j in range(MAX_LEN):
+            raw += [numToWord[xTest[i][j]]]
+            normalized += [numToWord[yTest[i][j]]]
+    
+        raw = ' '.join(raw)
+        normalized = ' '.join(normalized)
+        normalizedAns = ' '.join(normalizedAns)
+
+        print(raw,end='\n')
+        print(normalized,end='\n')
+        print(normalizedAns,end='\n\n')
+
 
 def trainModel():
 
-    rawDataTrain, normalizedDataTrain = getData('train.norm',800)
-    rawDataTest, normalizedDataTest = getData('dev.norm',200)
+    rawDataTrain, normalizedDataTrain = getData('train.norm',1500)
+
+    rawDataTest, normalizedDataTest = getData('dev.norm',100)
 
     wordToNum = buildDict(rawDataTrain+normalizedDataTrain)
+    numToWord = buildDictInv(wordToNum)
     vocab_size = len(wordToNum)+1
     
     rawDataTrain = tokenize(rawDataTrain, wordToNum)
@@ -130,15 +165,16 @@ def trainModel():
     xTest  = rawDataTest
     yTest  = normalizedDataTest
 
-    yTrainOneHot = tf.one_hot(yTrain,vocab_size)
-    yTestOneHot  = tf.one_hot(yTest,vocab_size)
+    yTrainOneHot = one_hot(yTrain,vocab_size, on_value=1, off_value=0)
+    yTestOneHot  = one_hot(yTest,vocab_size, on_value=1, off_value=0)
 
     model       = getModel(vocab_size)
 
-    history     = model.fit([xTrain, yTrain], yTrainOneHot, validation_data=([xTest, yTest], yTestOneHot), batch_size=BATCH_SIZE, epochs=EPOCHS)
-    
+    history     = model.fit(xTrain, yTrainOneHot, validation_data=(xTest, yTestOneHot), batch_size=BATCH_SIZE, epochs=EPOCHS)
+
+    predictTest(model, xTest, yTest, numToWord)
+
     return model,history
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     model,history = trainModel()
