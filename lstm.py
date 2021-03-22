@@ -4,14 +4,14 @@ warnings.filterwarnings('ignore',category=FutureWarning)
 import re
 import os
 import time
+import json
 import numpy as np
 import pandas as pd
-import pickle as pkl
 import matplotlib.pyplot as plt
 from collections import defaultdict 
 import tensorflow.keras.backend as K
 
-from tensorflow import one_hot
+import tensorflow as tf
 from tensorflow.keras.preprocessing.text import Tokenizer
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 
@@ -22,159 +22,160 @@ from tensorflow.keras.layers import Dense
 from tensorflow.keras.layers import Input
 from tensorflow.keras.layers import Embedding
 from tensorflow.keras.layers import Activation
-from tensorflow.keras.layers import RepeatVector
-from tensorflow.keras.layers import Bidirectional
 from tensorflow.keras.layers import TimeDistributed
+from tensorflow.keras.layers import RepeatVector
+from tensorflow.keras.layers import LayerNormalization
 
 from tensorflow.keras.optimizers import Adam
 
 
+TEST = 50
+TRAIN = 2500
 EPOCHS = 10
-MAX_LEN = 50
+LIMIT = 3000
+MAX_LEN = 175
 VOCAB_SIZE = 0
-VECTOR_DIM = 100
+VECTOR_DIM = 200
 HIDDEN_DIM = 300
-BATCH_SIZE = 16
+BATCH_SIZE = 32
 
-def getData(path,limit):
+def getData(path, limit):
 
-    curSent = []
     rawData = []
     normalizedData = []
+    
+    data = json.load(open(path))
 
-    for line in open(path):
-        tok = line.strip().split('\t')
+    for dict in data:
 
-        if tok == [''] or tok == []:
-            rawData.append([x[0] for x in curSent])
-            normalizedData.append([x[1] for x in curSent])
-            curSent = []
+        rawSent = ' '.join(dict['input'])
+        rawSent = re.sub('@[^ ]+','<username>',rawSent)
+        rawSent = re.sub('http[^ ]+','<link>',rawSent)
 
-        else:
-            if len(tok) == 1:
-                tok.append('')
-            curSent.append(tok)
+        normSent = ' '.join(dict['output'])
+        normSent = re.sub('@[^ ]+','<username>',normSent)
+        normSent = re.sub('http[^ ]+','<link>',normSent)
 
-    if curSent != []:
-        rawData.append([x[0] for x in curSent])
-        normalizedData.append([x[1] for x in curSent])
+        rawData.append(rawSent)
+        normalizedData.append(normSent)
 
     return rawData[:limit], normalizedData[:limit]
 
-def buildDict(data):
+def getCharToNum(data):
 
-    wordToNum = defaultdict(int)
+    charToNum = {}
+
     num = 1
     for sent in data:
-        for word in sent:
-            if not wordToNum[word]:
-                wordToNum[word] = num
-                num+= 1
+        for letter in sent:
+            if letter not in charToNum.keys():
+                charToNum[letter] = num
+                num += 1
 
-    return wordToNum
+    return charToNum
 
-def buildDictInv(wordToNum):
+def getNumToChar(charToNum):
 
-    numToWord = defaultdict(str)
+    numToChar = {0:' '}
 
-    for key in wordToNum.keys():
-        numToWord[wordToNum[key]]=key
+    for char in charToNum.keys():
 
-    return numToWord
+        numToChar[charToNum[char]] = char
 
-def tokenize(data,wordToNum):
+    return numToChar
+
+def tokenize(data, charToNum, repeat):
 
     tokenizedData = []
 
     for sent in data:
 
         tokenizedSent = []
-        for word in sent:
-            tokenizedSent.append(wordToNum[word])
 
-        for _ in range(MAX_LEN-len(tokenizedSent)):
-            tokenizedSent.append(0)
+        if repeat:
+            while len(tokenizedSent)<MAX_LEN:
+                for letter in sent:
+                    tokenizedSent.append(charToNum[letter])
+                tokenizedSent.append(0)
 
-        tokenizedSent=np.array(tokenizedSent,dtype=float)
+            tokenizedSent = tokenizedSent[:MAX_LEN]
+
+        else:
+            for letter in sent:
+                tokenizedSent.append(charToNum[letter])
+
+            if len(tokenizedSent) < MAX_LEN:
+                for _ in range(MAX_LEN-len(tokenizedSent)):
+                    tokenizedSent.append(0)
+            
+            tokenizedSent = tokenizedSent[:MAX_LEN]
+
         tokenizedData.append(tokenizedSent)
-
+    
     return np.array(tokenizedData)
 
 def getModel(VOCAB_SIZE):
 
     model = Sequential()
 
-    model.add(Input(shape=(MAX_LEN,)))
-    model.add(Embedding(VOCAB_SIZE, output_dim=VECTOR_DIM, input_length=MAX_LEN, mask_zero=True, trainable=True))
-    model.add(LSTM(HIDDEN_DIM))
-    model.add(RepeatVector(MAX_LEN))
+    model.add(Input(shape=(MAX_LEN, )))
+    model.add(Embedding(VOCAB_SIZE, output_dim=VECTOR_DIM, input_length=MAX_LEN, mask_zero=False, trainable=True))
+    model.add(LSTM(HIDDEN_DIM, return_sequences=True))
+    model.add(LayerNormalization())
     model.add(LSTM(HIDDEN_DIM, return_sequences = True))
+    model.add(LayerNormalization())
     model.add(TimeDistributed(Dense(VOCAB_SIZE)))
     model.add(Activation('softmax'))
-    model.compile(optimizer='adam', loss='categorical_crossentropy')
-    
-    print(model.summary())
+    model.compile(optimizer=Adam(0.01), loss='categorical_crossentropy', metrics=['accuracy'])
     
     return model
 
-def predictTest(model, xTest, yTest, numToWord):
-
-    for i in range(50):
-
-        ans = model.predict(xTest[i:i+1,:])
-        ans = K.argmax(ans,-1)
-
-        raw = []
-        normalized = []
-        normalizedAns = []
-        for j in range(MAX_LEN):
-            normalizedAns+=[numToWord[ans.numpy()[0][j]]]
-
-        for j in range(MAX_LEN):
-            raw += [numToWord[xTest[i][j]]]
-            normalized += [numToWord[yTest[i][j]]]
-    
-        raw = ' '.join(raw)
-        normalized = ' '.join(normalized)
-        normalizedAns = ' '.join(normalizedAns)
-
-        print(raw,end='\n')
-        print(normalized,end='\n')
-        print(normalizedAns,end='\n\n')
-
-
-def trainModel():
-
-    rawDataTrain, normalizedDataTrain = getData('train.norm',1500)
-
-    rawDataTest, normalizedDataTest = getData('dev.norm',100)
-
-    wordToNum = buildDict(rawDataTrain+normalizedDataTrain)
-    numToWord = buildDictInv(wordToNum)
-    vocab_size = len(wordToNum)+1
-    
-    rawDataTrain = tokenize(rawDataTrain, wordToNum)
-    normalizedDataTrain = tokenize(normalizedDataTrain, wordToNum)
-
-    rawDataTest = tokenize(rawDataTest, wordToNum)
-    normalizedDataTest = tokenize(normalizedDataTest, wordToNum)
-    
-    xTrain = rawDataTrain
-    yTrain = normalizedDataTrain
-
-    xTest  = rawDataTest
-    yTest  = normalizedDataTest
-
-    yTrainOneHot = one_hot(yTrain,vocab_size, on_value=1, off_value=0)
-    yTestOneHot  = one_hot(yTest,vocab_size, on_value=1, off_value=0)
-
-    model       = getModel(vocab_size)
-
-    history     = model.fit(xTrain, yTrainOneHot, validation_data=(xTest, yTestOneHot), batch_size=BATCH_SIZE, epochs=EPOCHS)
-
-    predictTest(model, xTest, yTest, numToWord)
-
-    return model,history
-
 if __name__ == '__main__':
-    model,history = trainModel()
+
+    x, y = getData('data.json',LIMIT)
+
+    xTrain = x[:TRAIN]
+    yTrain = y[:TRAIN]
+
+    xTest = x[TRAIN:]
+    yTest = y[TRAIN:]
+
+    charToNum = getCharToNum(xTrain + yTrain + xTest + yTest)
+    numToChar = getNumToChar(charToNum)
+
+    xTrain = tokenize(xTrain, charToNum, False)
+    yTrain = tokenize(yTrain, charToNum, True)
+    xTest = tokenize(xTest, charToNum, False)
+    yTest = tokenize(yTest, charToNum, True)
+
+    VOCAB_SIZE = len(charToNum)+1
+
+    yTrain = tf.one_hot(yTrain, VOCAB_SIZE)
+    yTest = tf.one_hot(yTest, VOCAB_SIZE)
+
+    model = getModel(VOCAB_SIZE)
+
+    print(model.summary())
+
+    model.fit(xTrain, yTrain, validation_data=(xTest, yTest), epochs=EPOCHS, batch_size=BATCH_SIZE)
+
+    for i in range(TEST):
+
+      sent = xTest[i:i+1]
+      ans = model.predict(sent)
+      ans = K.argmax(ans,-1)
+
+      raw = []
+      normalizedAns = []
+
+      for j in range(MAX_LEN):
+          normalizedAns+=[numToChar[ans.numpy()[0][j]]]
+
+      for j in range(MAX_LEN):
+          raw += [numToChar[xTest[i][j]]]
+  
+      raw = ''.join(raw)
+      normalizedAns = ''.join(normalizedAns)
+
+      print(raw,end='\n')
+      print(normalizedAns,end='\n\n')
