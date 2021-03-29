@@ -6,176 +6,150 @@ import os
 import time
 import json
 import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-from collections import defaultdict 
-import tensorflow.keras.backend as K
 
 import tensorflow as tf
-from tensorflow.keras.preprocessing.text import Tokenizer
-from tensorflow.keras.preprocessing.sequence import pad_sequences
 
+from tensorflow import keras as K
 from tensorflow.keras.models import Sequential
 
+from tensorflow.keras.initializers import Constant
+
+from tensorflow.keras.metrics import Recall
+from tensorflow.keras.metrics import Precision
+from tensorflow.keras.metrics import TrueNegatives
+from tensorflow.keras.metrics import TruePositives
+from tensorflow.keras.metrics import FalsePositives
+from tensorflow.keras.metrics import FalseNegatives
+
+from tensorflow.keras.layers import Input
 from tensorflow.keras.layers import LSTM
 from tensorflow.keras.layers import Dense
-from tensorflow.keras.layers import Input
+from tensorflow.keras.layers import Dropout
 from tensorflow.keras.layers import Embedding
-from tensorflow.keras.layers import Activation
 from tensorflow.keras.layers import TimeDistributed
-from tensorflow.keras.layers import RepeatVector
-from tensorflow.keras.layers import LayerNormalization
 
-from tensorflow.keras.optimizers import Adam
+PAD = 0
+ONE = 2
+ZERO = 1
+EPOCHS = 3
+LIMIT = 100
+MAX_LEN = 50
+BATCH_SIZE = 16
+HIDDEN_DIM = 100
+VECTOR_DIM = 100
+VALID_SPLIT = 0.15
 
+def get_data(path, limit=False):
 
-TEST = 50
-TRAIN = 2500
-EPOCHS = 10
-LIMIT = 3000
-MAX_LEN = 175
-VOCAB_SIZE = 0
-VECTOR_DIM = 200
-HIDDEN_DIM = 300
-BATCH_SIZE = 32
+    X = []
+    Y = []
 
-def getData(path, limit):
-
-    rawData = []
-    normalizedData = []
-    
     data = json.load(open(path))
 
     for dict in data:
 
-        rawSent = ' '.join(dict['input'])
-        rawSent = re.sub('@[^ ]+','<username>',rawSent)
-        rawSent = re.sub('http[^ ]+','<link>',rawSent)
+        x = dict['input']
+        y = dict['output']
 
-        normSent = ' '.join(dict['output'])
-        normSent = re.sub('@[^ ]+','<username>',normSent)
-        normSent = re.sub('http[^ ]+','<link>',normSent)
+        for i in range(len(x)):
+            x[i] = re.sub('@[^ ]+','<username>',x[i])
+            x[i] = re.sub('http://[^ ]+','<link>',x[i])
 
-        rawData.append(rawSent)
-        normalizedData.append(normSent)
+            y[i] = re.sub('@[^ ]+','<username>',y[i])
+            y[i] = re.sub('http://[^ ]+','<link>',y[i])
 
-    return rawData[:limit], normalizedData[:limit]
+            if x[i] != y[i]:
+                y[i] = 1
+            else:
+                y[i] = 0
+        
+        X.append(x)
+        Y.append(y)
 
-def getCharToNum(data):
+        if limit and len(X) == LIMIT:
+            break
 
-    charToNum = {}
+    return X, Y
+
+def tokenize(x):
+
+    tokenized_x = []
+
+    dict = {'<pad>':0}
 
     num = 1
-    for sent in data:
-        for letter in sent:
-            if letter not in charToNum.keys():
-                charToNum[letter] = num
+
+    for sent in x:
+
+        tokenized_xi = []
+
+        for _ in range(MAX_LEN-len(sent)):
+            sent.append('<pad>')
+
+        for word in sent:
+
+            if word not in dict.keys():
+                dict[word] = num
                 num += 1
 
-    return charToNum
+            tokenized_xi.append(dict[word])
 
-def getNumToChar(charToNum):
+        tokenized_x.append(np.array(tokenized_xi))
 
-    numToChar = {0:' '}
+    return np.array(tokenized_x), num
 
-    for char in charToNum.keys():
+def numpy_format(y):
 
-        numToChar[charToNum[char]] = char
+    np_y = []
 
-    return numToChar
+    for sent in y:
 
-def tokenize(data, charToNum, repeat):
+        for _ in range(MAX_LEN-len(sent)):
 
-    tokenizedData = []
+            sent.append(0)
+        
+        np_y.append(np.array(sent).reshape(MAX_LEN,1))
 
-    for sent in data:
+    return np.array(np_y)
 
-        tokenizedSent = []
 
-        if repeat:
-            while len(tokenizedSent)<MAX_LEN:
-                for letter in sent:
-                    tokenizedSent.append(charToNum[letter])
-                tokenizedSent.append(0)
-
-            tokenizedSent = tokenizedSent[:MAX_LEN]
-
-        else:
-            for letter in sent:
-                tokenizedSent.append(charToNum[letter])
-
-            if len(tokenizedSent) < MAX_LEN:
-                for _ in range(MAX_LEN-len(tokenizedSent)):
-                    tokenizedSent.append(0)
-            
-            tokenizedSent = tokenizedSent[:MAX_LEN]
-
-        tokenizedData.append(tokenizedSent)
-    
-    return np.array(tokenizedData)
-
-def getModel(VOCAB_SIZE):
+def get_model(VOCAB_SIZE):
 
     model = Sequential()
+    model.add(Input(shape=(MAX_LEN)))
+    model.add(Embedding(VOCAB_SIZE,
+                        output_dim = VECTOR_DIM,
+                        input_length = MAX_LEN,
+                        mask_zero = True,
+                        trainable = True))
+    model.add(LSTM(HIDDEN_DIM,return_sequences = True, recurrent_dropout = 0.5, dropout = 0.5))
+    model.add(LSTM(1,return_sequences = True, recurrent_dropout = 0.5, dropout = 0.5, activation='sigmoid'))
 
-    model.add(Input(shape=(MAX_LEN, )))
-    model.add(Embedding(VOCAB_SIZE, output_dim=VECTOR_DIM, input_length=MAX_LEN, mask_zero=False, trainable=True))
-    model.add(LSTM(HIDDEN_DIM, return_sequences=True))
-    model.add(LayerNormalization())
-    model.add(LSTM(HIDDEN_DIM, return_sequences = True))
-    model.add(LayerNormalization())
-    model.add(TimeDistributed(Dense(VOCAB_SIZE)))
-    model.add(Activation('softmax'))
-    model.compile(optimizer=Adam(0.01), loss='categorical_crossentropy', metrics=['accuracy'])
-    
+    model.compile(optimizer = 'adam', loss = 'binary_crossentropy', metrics=[Precision(), Recall()],sample_weight_mode="temporal")
+
     return model
+
+def get_sample_weights(x, y):
+
+    sample_weights = np.zeros((len(y), MAX_LEN))
+
+    sample_weights[y[:,:,0] == 0] = ZERO
+    sample_weights[y[:,:,0] == 1] = ONE
+    sample_weights[x == 0] = PAD
+
+    return sample_weights
 
 if __name__ == '__main__':
 
-    x, y = getData('data.json',LIMIT)
+    x, y = get_data('data.json')
 
-    xTrain = x[:TRAIN]
-    yTrain = y[:TRAIN]
+    x, VOCAB_SIZE = tokenize(x)
+    y = numpy_format(y)
 
-    xTest = x[TRAIN:]
-    yTest = y[TRAIN:]
-
-    charToNum = getCharToNum(xTrain + yTrain + xTest + yTest)
-    numToChar = getNumToChar(charToNum)
-
-    xTrain = tokenize(xTrain, charToNum, False)
-    yTrain = tokenize(yTrain, charToNum, True)
-    xTest = tokenize(xTest, charToNum, False)
-    yTest = tokenize(yTest, charToNum, True)
-
-    VOCAB_SIZE = len(charToNum)+1
-
-    yTrain = tf.one_hot(yTrain, VOCAB_SIZE)
-    yTest = tf.one_hot(yTest, VOCAB_SIZE)
-
-    model = getModel(VOCAB_SIZE)
+    model = get_model(VOCAB_SIZE)
 
     print(model.summary())
 
-    model.fit(xTrain, yTrain, validation_data=(xTest, yTest), epochs=EPOCHS, batch_size=BATCH_SIZE)
+    sample_weights = get_sample_weights(x, y)
 
-    for i in range(TEST):
-
-      sent = xTest[i:i+1]
-      ans = model.predict(sent)
-      ans = K.argmax(ans,-1)
-
-      raw = []
-      normalizedAns = []
-
-      for j in range(MAX_LEN):
-          normalizedAns+=[numToChar[ans.numpy()[0][j]]]
-
-      for j in range(MAX_LEN):
-          raw += [numToChar[xTest[i][j]]]
-  
-      raw = ''.join(raw)
-      normalizedAns = ''.join(normalizedAns)
-
-      print(raw,end='\n')
-      print(normalizedAns,end='\n\n')
+    model.fit(x, y, batch_size = BATCH_SIZE, epochs = EPOCHS, validation_split = VALID_SPLIT, sample_weight=sample_weights)
