@@ -1,3 +1,5 @@
+keras
 numpy
 pandas
+matplotlib
 tensorflow

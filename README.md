@@ -1,1 +1,1 @@
-# Deep Learning approach for Lexical Normalization
+# NLP approach for Lexical Normalization
